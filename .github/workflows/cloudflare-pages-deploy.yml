@@ -18,8 +18,8 @@ name: Deploy to Cloudflare Pages
 #   - 其余可选：与 cloudflare-deploy.yml 相同的运行时/构建变量（见下方列表）
 #
 # 另需：在 Cloudflare 控制台创建 Pages 项目（V2 构建系统，Production 分支 main）。
-#   只有通过 wrangler.toml 的 pages_build_output_dir 启用 V2 配置后，本工作流
-#   生成的 .wrangler-pages.toml 中的 D1 / [vars] 绑定才会应用到项目。
+#   只有配置里设置了 pages_build_output_dir（本工作流在部署前会自动把 Pages 配置写入
+#   默认的 wrangler.toml），D1 / [vars] 绑定才会应用到项目。
 
 on:
   workflow_dispatch:
@@ -130,16 +130,18 @@ jobs:
           echo "Assembled Pages output directory:"
           ls -la dist | head -15
 
-      # --- 生成 Pages 专用 wrangler 配置 -----------------------------------------
-      # 必须设置 pages_build_output_dir，wrangler pages deploy 才会把 D1 / [vars]
-      # 绑定应用到项目（否则仅视为本地开发配置）。
-      # 注意：Workers 专属键（main / assets / minify）不适用于 Pages 配置。
+      # --- 用 Pages 配置覆盖 wrangler.toml ------------------------------------------
+      # wrangler pages deploy 不支持自定义配置路径（--config），只认默认位置的
+      # wrangler.toml。构建已完成（上面 build 用的是 Workers 配置，含 main/assets），
+      # 这里直接用 Pages 配置覆盖，供后面的部署/迁移步骤使用。
+      # 必须设置 pages_build_output_dir，D1 / [vars] 绑定才会应用到项目
+      # （否则仅视为本地开发配置）。Workers 专属键不适用于 Pages 配置。
       - name: Generate Pages wrangler config
         run: |
           PROJECT_NAME="${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME || 'moontvplus' }}"
           STORAGE_TYPE="${{ secrets.NEXT_PUBLIC_STORAGE_TYPE }}"
 
-          cat > .wrangler-pages.toml <<EOF
+          cat > wrangler.toml <<EOF
           name = "$PROJECT_NAME"
           compatibility_date = "2024-09-23"
           compatibility_flags = ["nodejs_compat"]
@@ -151,11 +153,11 @@ jobs:
               echo "::error::Storage type is d1 but D1_DATABASE_ID secret is not set"
               exit 1
             fi
-            echo '[[d1_databases]]' >> .wrangler-pages.toml
-            echo 'binding = "DB"' >> .wrangler-pages.toml
-            echo 'database_name = "moontvplus"' >> .wrangler-pages.toml
-            echo "database_id = \"${{ secrets.D1_DATABASE_ID }}\"" >> .wrangler-pages.toml
-            echo '' >> .wrangler-pages.toml
+            echo '[[d1_databases]]' >> wrangler.toml
+            echo 'binding = "DB"' >> wrangler.toml
+            echo 'database_name = "moontvplus"' >> wrangler.toml
+            echo "database_id = \"${{ secrets.D1_DATABASE_ID }}\"" >> wrangler.toml
+            echo '' >> wrangler.toml
           fi
 
           # 运行时环境变量（追加到 [vars]）
@@ -163,11 +165,11 @@ jobs:
             local var_name=$1
             local var_value=$2
             if [ -n "$var_value" ]; then
-              echo "$var_name = \"$var_value\"" >> .wrangler-pages.toml
+              echo "$var_name = \"$var_value\"" >> wrangler.toml
             fi
           }
 
-          echo '[vars]' >> .wrangler-pages.toml
+          echo '[vars]' >> wrangler.toml
           append_var "NEXT_PUBLIC_STORAGE_TYPE" "${{ secrets.NEXT_PUBLIC_STORAGE_TYPE }}"
           append_var "NEXT_PUBLIC_SITE_NAME" "${{ secrets.NEXT_PUBLIC_SITE_NAME }}"
           append_var "NEXT_PUBLIC_SEARCH_MAX_PAGE" "${{ secrets.NEXT_PUBLIC_SEARCH_MAX_PAGE }}"
@@ -205,8 +207,8 @@ jobs:
           append_var "WATCH_ROOM_EXTERNAL_SERVER_URL" "${{ secrets.WATCH_ROOM_EXTERNAL_SERVER_URL }}"
           append_var "WATCH_ROOM_SERVER_TYPE" "${{ secrets.WATCH_ROOM_SERVER_TYPE }}"
 
-          echo "Generated .wrangler-pages.toml:"
-          cat .wrangler-pages.toml
+          echo "Generated wrangler.toml:"
+          cat wrangler.toml
 
       - name: Install Wrangler
         run: pnpm add -g wrangler@4.60.0
@@ -251,6 +253,5 @@ jobs:
             pages deploy
             --project-name=${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME || 'moontvplus' }}
             --branch=${{ github.ref_name }}
-            --config=.wrangler-pages.toml
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
           packageManager: pnpm
