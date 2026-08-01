@@ -124,13 +124,19 @@ jobs:
       # OpenNext 构建产物是 Workers 形态：.open-next/worker.js + .open-next/assets
       # Pages 高级模式要求：输出目录根部放 _worker.js，静态资源与之一同上传。
       # Pages 会提供默认 env.ASSETS 绑定，与 OpenNext worker 的 ASSETS 期望一致。
+      # 注意：worker.js 并非自包含文件——它用相对路径 import 了 .open-next 下的其他
+      # 模块（cloudflare/、middleware/、.build/durable-objects/、server-functions/）。
+      # Pages 打包 _worker.js 时需要解析这些 import，因此必须把这些目录一并复制到
+      # dist/，否则会报 "Could not resolve ./cloudflare/..." 之类的构建错误。
       - name: Assemble Pages output directory
         run: |
           mkdir -p dist
           cp -r .open-next/assets/. dist/
+          # 复制 worker.js 依赖的其余 .open-next 内容（find 才能匹配隐藏目录 .build）
+          find .open-next -mindepth 1 -maxdepth 1 ! -name assets ! -name worker.js -exec cp -r {} dist/ \;
           cp .open-next/worker.js dist/_worker.js
           echo "Assembled Pages output directory:"
-          ls -la dist | head -15
+          ls -la dist | head -20
 
       # --- 用 Pages 配置覆盖 wrangler.toml ------------------------------------------
       # wrangler pages deploy 不支持自定义配置路径（--config），只认默认位置的
