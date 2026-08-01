@@ -5,7 +5,9 @@ name: Deploy to Cloudflare Pages
 #
 # ⚠️ 说明：Cloudflare 官方对完整栈 Next.js 应用推荐的落点是 Workers（而非 Pages），
 #   本工作流属于非官方路径（实验性）：把 OpenNext 构建出的 Worker 作为 Pages 的
-#   _worker.js (Advanced mode) 上传，借助 Pages 默认的 env.ASSETS 绑定服务静态资源。
+#   _worker.js (Advanced mode) 上传，并为它加一层包装：静态资源先由 Pages 默认的
+#   env.ASSETS 绑定返回，其余请求再交给 OpenNext worker（OpenNext worker 模板本身
+#   不调用 env.ASSETS，详见下方"Assemble"步骤注释）。
 #   首次部署后请验证：首页/搜索/播放/登录/管理后台是否正常。
 #
 # 前置条件（GitHub Secrets）：
@@ -123,7 +125,13 @@ jobs:
       # --- 组装 Pages 输出目录 --------------------------------------------------
       # OpenNext 构建产物是 Workers 形态：.open-next/worker.js + .open-next/assets
       # Pages 高级模式要求：输出目录根部放 _worker.js，静态资源与之一同上传。
-      # Pages 会提供默认 env.ASSETS 绑定，与 OpenNext worker 的 ASSETS 期望一致。
+      # ⚠️ 关键：OpenNext 的 worker 模板并不调用 env.ASSETS 分发静态资源。它在 Workers
+      #   部署下没问题（[assets] 绑定会在请求进入 worker 前直接拦截 _next/static 等静态
+      #   文件）；但 Pages 高级模式要求 _worker.js 接管全部请求，若不处理静态资源，浏览器
+      #   请求的 CSS/JS 会全部落入 Next.js 应用返回 404 —— 页面无样式、无交互（"没正常渲染"）。
+      #   因此这里把 worker.js 改名为 opennext-worker.js，再写一个 _worker.js 包装：
+      #   先调用 Pages 默认绑定 env.ASSETS.fetch() 返回静态资源，仅当 ASSETS 返回 404
+      #   （页面 / API 等非静态请求）时才交给 OpenNext worker 处理。
       # 注意：worker.js 并非自包含文件——它用相对路径 import 了 .open-next 下的其他
       # 模块（cloudflare/、middleware/、.build/durable-objects/、server-functions/）。
       # Pages 打包 _worker.js 时需要解析这些 import，因此必须把这些目录一并复制到
@@ -132,9 +140,25 @@ jobs:
         run: |
           mkdir -p dist
           cp -r .open-next/assets/. dist/
-          # 复制 worker.js 依赖的其余 .open-next 内容（find 才能匹配隐藏目录 .build）
+          # 复制 opennext-worker.js 依赖的其余 .open-next 内容（find 才能匹配隐藏目录 .build）
           find .open-next -mindepth 1 -maxdepth 1 ! -name assets ! -name worker.js -exec cp -r {} dist/ \;
-          cp .open-next/worker.js dist/_worker.js
+          cp .open-next/worker.js dist/opennext-worker.js
+          cat > dist/_worker.js <<'EOF'
+          import worker from "./opennext-worker.js";
+
+          export default {
+            async fetch(request, env, ctx) {
+              // 静态资源优先由 Pages 的 ASSETS 绑定返回；404（非静态文件）才交给 OpenNext worker
+              if (env.ASSETS && (request.method === "GET" || request.method === "HEAD")) {
+                const asset = await env.ASSETS.fetch(request);
+                if (asset.status !== 404) {
+                  return asset;
+                }
+              }
+              return worker.fetch(request, env, ctx);
+            }
+          };
+          EOF
           echo "Assembled Pages output directory:"
           ls -la dist | head -20
 
