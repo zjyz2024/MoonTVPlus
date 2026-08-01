@@ -17,7 +17,9 @@ name: Deploy to Cloudflare Pages
 #   - CLOUDFLARE_PAGES_PROJECT_NAME 可选。Pages 项目名，默认 moontvplus
 #   - 其余可选：与 cloudflare-deploy.yml 相同的运行时/构建变量（见下方列表）
 #
-# 另需：在 Cloudflare 控制台创建 Pages 项目（V2 构建系统，Production 分支 main）。
+# 项目创建：无需手动预建。wrangler pages deploy 在 CI 下不会自动创建项目（项目不存在
+#   时报 code 8000007），工作流部署前会先检查并用 `wrangler pages project create`
+#   自动创建（生产分支 main）。新项目默认使用 V2 构建系统（2023-07 起）。
 #   只有配置里设置了 pages_build_output_dir（本工作流在部署前会自动把 Pages 配置写入
 #   默认的 wrangler.toml），D1 / [vars] 绑定才会应用到项目。
 
@@ -212,6 +214,30 @@ jobs:
 
       - name: Install Wrangler
         run: pnpm add -g wrangler@4.60.0
+
+      # --- 确保 Pages 项目存在 -----------------------------------------------------
+      # wrangler pages deploy 只在交互式终端里才会提示"创建项目"；CI 非交互模式下
+      # 项目不存在会直接报错（code 8000007，Project not found）。因此先检查项目是否
+      # 已存在，不存在则用 pages project create 创建（2023-07 起新项目默认 V2 构建
+      # 系统，无需手动开启）。production branch 设为 main，与部署的 --branch 一致。
+      # 非交互下必须传 --production-branch，否则 wrangler 直接抛
+      # "Must specify a production branch"。顺带写入 compat_date / nodejs_compat，
+      # 与 wrangler.toml 保持一致。
+      - name: Create Cloudflare Pages project (if not exists)
+        run: |
+          PROJECT_NAME="${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME || 'moontvplus' }}"
+          if wrangler pages project list --json | jq -e --arg name "$PROJECT_NAME" 'any(.[]; .["Project Name"] == $name)' >/dev/null 2>&1; then
+            echo "Pages project '$PROJECT_NAME' already exists, skipping creation"
+          else
+            echo "Creating Cloudflare Pages project '$PROJECT_NAME'..."
+            wrangler pages project create "$PROJECT_NAME" \
+              --production-branch=main \
+              --compatibility-date=2024-09-23 \
+              --compatibility-flag=nodejs_compat
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Run D1 Database Migrations
         run: |
